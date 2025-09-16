@@ -71,18 +71,15 @@ A comprehensive, real-time Application Performance Monitoring (APM) system built
 
 3. **Set up environment variables**
    ```bash
-   # Copy example environment file
-   cp .env.example .env
-   
-   # Configure your database connection
-   DATABASE_URL=postgresql://username:password@localhost:5432/apm_db
-   SESSION_SECRET=your-session-secret-key
-   PORT=5000
+   # Create environment file with your database configuration
+   echo "DATABASE_URL=postgresql://username:password@localhost:5432/apm_db" > .env
+   echo "SESSION_SECRET=your-session-secret-key" >> .env
+   echo "PORT=5000" >> .env
    ```
 
 4. **Set up the database**
    ```bash
-   # Push database schema
+   # Push database schema to your PostgreSQL database
    npm run db:push
    ```
 
@@ -93,7 +90,7 @@ A comprehensive, real-time Application Performance Monitoring (APM) system built
 
 6. **Access the dashboard**
    - Open http://localhost:5000 in your browser
-   - The dashboard will load with sample data
+   - The system will automatically generate sample metrics for demonstration
 
 ## 🏗️ Project Structure
 
@@ -126,54 +123,70 @@ A comprehensive, real-time Application Performance Monitoring (APM) system built
 ### Metrics Ingestion
 
 #### Register Application
-```http
-POST /api/ingest/register
-Content-Type: application/json
+```bash
+curl -X POST http://localhost:5000/api/ingest/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Application",
+    "description": "Application description",
+    "version": "1.0.0",
+    "environment": "production"
+  }'
 
+# Response
 {
-  "name": "My Application",
-  "description": "Application description",
-  "version": "1.0.0",
-  "environment": "production"
+  "applicationId": "uuid-here",
+  "message": "Application registered successfully",
+  "application": { ... }
 }
 ```
 
 #### Send Bulk Metrics
-```http
-POST /api/ingest/metrics/bulk
-Content-Type: application/json
+```bash
+curl -X POST http://localhost:5000/api/ingest/metrics/bulk \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicationId": "your-app-uuid",
+    "metrics": [
+      {
+        "responseTime": 245.5,
+        "throughput": 1850,
+        "errorRate": 0.5,
+        "successRate": 99.5,
+        "cpuUsage": 45.2,
+        "memoryUsage": 67.8
+      }
+    ]
+  }'
 
+# Response
 {
-  "applicationId": "app-uuid",
-  "metrics": [
-    {
-      "responseTime": 245.5,
-      "throughput": 1850,
-      "errorRate": 0.5,
-      "successRate": 99.5,
-      "cpuUsage": 45.2,
-      "memoryUsage": 67.8
-    }
-  ]
+  "message": "Successfully ingested 1 metrics",
+  "count": 1
 }
 ```
 
 #### Send Bulk Errors
-```http
-POST /api/ingest/errors/bulk
-Content-Type: application/json
+```bash
+curl -X POST http://localhost:5000/api/ingest/errors/bulk \
+  -H "Content-Type: application/json" \
+  -d '{
+    "applicationId": "your-app-uuid",
+    "errors": [
+      {
+        "errorType": "DatabaseError",
+        "message": "Connection timeout",
+        "endpoint": "/api/users",
+        "stackTrace": "Error at line 42...",
+        "count": 3
+      }
+    ]
+  }'
 
+# Response
 {
-  "applicationId": "app-uuid", 
-  "errors": [
-    {
-      "errorType": "DatabaseError",
-      "message": "Connection timeout",
-      "endpoint": "/api/users",
-      "stackTrace": "Error at line 42...",
-      "count": 3
-    }
-  ]
+  "message": "Successfully ingested 1 errors",
+  "count": 1
 }
 ```
 
@@ -203,10 +216,20 @@ GET /api/alerts?applicationId=app-uuid&acknowledged=false
 
 The dashboard uses WebSocket connections for real-time updates:
 
+- **WebSocket Endpoint** - `ws://localhost:5000/ws` (or your server URL)
 - **Automatic Data Refresh** - Metrics update every 10 seconds
 - **Live Notifications** - New errors and alerts appear instantly
-- **Connection Resilience** - Automatic reconnection on network issues
+- **Connection Resilience** - Automatic reconnection after 3 seconds on disconnect
 - **Efficient Updates** - Only changed data is transmitted
+
+### WebSocket Message Format
+```javascript
+// Incoming message structure
+{
+  "type": "metric" | "error" | "alert",
+  "data": { /* relevant data object */ }
+}
+```
 
 ## 📊 Monitoring Your Applications
 
@@ -229,21 +252,32 @@ To monitor your applications with this APM system:
 
 2. **Send metrics periodically**
    ```javascript
+   const API_BASE = 'http://your-apm-dashboard-host:5000'; // Replace with your APM dashboard URL
+   
    setInterval(async () => {
-     await fetch('/api/ingest/metrics/bulk', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       body: JSON.stringify({
-         applicationId: applicationId,
-         metrics: [{
-           responseTime: getAverageResponseTime(),
-           throughput: getCurrentThroughput(),
-           errorRate: getErrorRate(),
-           cpuUsage: getCpuUsage(),
-           memoryUsage: getMemoryUsage()
-         }]
-       })
-     });
+     try {
+       const response = await fetch(`${API_BASE}/api/ingest/metrics/bulk`, {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({
+           applicationId: applicationId,
+           metrics: [{
+             responseTime: getAverageResponseTime(),
+             throughput: getCurrentThroughput(),
+             errorRate: getErrorRate(),
+             cpuUsage: getCpuUsage(),
+             memoryUsage: getMemoryUsage()
+           }]
+         })
+       });
+       
+       if (!response.ok) {
+         console.error('Failed to send metrics:', response.statusText);
+       }
+     } catch (error) {
+       console.error('Error sending metrics:', error);
+       // Implement retry logic as needed
+     }
    }, 10000); // Send metrics every 10 seconds
    ```
 
@@ -289,20 +323,22 @@ To monitor your applications with this APM system:
    npm start
    ```
 
-### Docker Deployment
+### Environment Variables
 
-```dockerfile
-FROM node:18-alpine
+Required environment variables for deployment:
 
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
+```bash
+# Database connection
+DATABASE_URL=postgresql://username:password@host:port/database
 
-COPY . .
-RUN npm run build
+# Session security
+SESSION_SECRET=your-secure-session-secret
 
-EXPOSE 5000
-CMD ["npm", "start"]
+# Server port (default: 5000)
+PORT=5000
+
+# Environment
+NODE_ENV=production
 ```
 
 ### Security Considerations
@@ -352,7 +388,7 @@ The system is optimized for high-performance metric ingestion:
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## 🆘 Support
 
